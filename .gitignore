@@ -1,0 +1,30 @@
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Credentials and local configuration
+.env
+.env.*
+secrets/
+secrets.*
+credentials.json
+*api_key*.txt
+*api-key*.txt
+
+# Editor, system, logs and local recordings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+recordings/
+node_modules/
