@@ -18,7 +18,7 @@ from google import genai
 from google.genai import types
 
 MODEL = "gemini-3.8-live"
-VOICE = "Zephyr"
+VOICE = "Charon"
 SESSION_SECONDS = 180
 ROOT = Path(__file__).resolve().parent
 FACE_ID = "99767950-9d68-4783-a305-9118006d3363"
