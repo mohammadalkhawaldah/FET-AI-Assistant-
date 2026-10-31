@@ -339,6 +339,7 @@ class LocalService:
         simli_key = ""
         jobs = []
         owns_session = False
+        stage = "Gemini"
         try:
             first = await asyncio.wait_for(socket.receive(), timeout=20)
             if first.type != WSMsgType.TEXT:
@@ -357,16 +358,19 @@ class LocalService:
             self.active = True
             owns_session = True
             config = make_config()
-            started = time.monotonic()
-            token = await mint_simli_token(simli_key)
-            await socket.send_json({"type": "simli_token", "session_token": token})
-            avatar_message = await asyncio.wait_for(socket.receive(), timeout=60)
-            if avatar_message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}:
-                return socket
-            if avatar_message.type != WSMsgType.TEXT or json.loads(avatar_message.data).get("type") != "avatar_ready":
-                raise ValueError("The Simli avatar did not finish connecting")
             client = genai.Client(api_key=key, http_options={"api_version": "v1beta"})
             async with client.aio.live.connect(model=MODEL, config=config) as session:
+                # Authenticate Gemini before starting Simli so an invalid Gemini
+                # key cannot briefly show an avatar and then tear its session down.
+                stage = "Simli"
+                started = time.monotonic()
+                token = await mint_simli_token(simli_key)
+                await socket.send_json({"type": "simli_token", "session_token": token})
+                avatar_message = await asyncio.wait_for(socket.receive(), timeout=60)
+                if avatar_message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING}:
+                    return socket
+                if avatar_message.type != WSMsgType.TEXT or json.loads(avatar_message.data).get("type") != "avatar_ready":
+                    raise ValueError("The Simli avatar did not finish connecting")
                 print("Gemini and Simli connected. Browser microphone stays active during avatar playback.")
                 await socket.send_json({"type": "ready"})
                 remaining = max(1, SESSION_SECONDS - (time.monotonic() - started))
@@ -385,6 +389,8 @@ class LocalService:
             raise
         except Exception as error:
             text = str(error)
+            if stage == "Gemini" and ("API_KEY_INVALID" in text or "API key not valid" in text):
+                text = "رفضت Google مفتاح Gemini API. أنشئ مفتاحًا صالحًا من Google AI Studio وتأكد أن قيوده تسمح باستخدام Gemini API."
             for value in (key, simli_key):
                 if value:
                     text = text.replace(value, "[REDACTED]")
