@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import base64
 import json
+import re
 import secrets
 import sys
 import time
@@ -72,12 +73,25 @@ button:disabled{opacity:.5;cursor:default}#stop{background:#425573;color:white;m
 progress{width:100%;height:12px;accent-color:#71dfbf}small{color:#b4c5dc}#log{font:13px/1.7 monospace;direction:ltr;text-align:left;white-space:pre-wrap;max-height:160px;overflow:auto;color:#b4c5dc}
 .avatar-stage{position:relative;max-width:480px;aspect-ratio:1;margin:20px auto;background:#080e18;border:1px solid #2d405d;border-radius:18px;overflow:hidden}
 .avatar-stage video{width:100%;height:100%;object-fit:contain}.avatar-label{position:absolute;bottom:12px;right:12px;padding:5px 12px;background:#132137dd;border-radius:20px;font-size:14px}
+[hidden]{display:none!important}.reference-panel{margin:20px 0;padding:18px;background:#0c1729;border:1px solid #4a8d80;border-radius:14px}
+.reference-panel h2{font-size:19px;margin:0 0 6px}.reference-panel>p{font-size:14px;margin:0 0 12px}
+.reference-card+ .reference-card{border-top:1px solid #2d405d;margin-top:16px;padding-top:16px}
+.reference-card h3{font-size:18px;margin:0 0 6px}.reference-card p{margin:6px 0 12px}
+.reference-url{display:block;direction:ltr;text-align:right;overflow-wrap:anywhere;color:#91e9d3}
+.reference-open{display:inline-block;padding:9px 18px;border-radius:9px;background:#71dfbf;color:#10211b;font-weight:700;text-decoration:none}
+.reference-card a:focus-visible{outline:3px solid #fff;outline-offset:4px}
 </style>
 <main><section>
 <h1>مساعد محمد الافتراضي</h1>
 <p>تحدث بصورة طبيعية. الميكروفون يبقى مفتوحًا أثناء الرد، ويمكنك المقاطعة بالكلام.</p>
 <div class="avatar-stage"><video id="avatarVideo" autoplay muted playsinline></video><span id="avatarState" class="avatar-label">الأفاتار جاهز للاتصال</span></div>
 <audio id="avatarAudio" autoplay></audio>
+<aside id="referencePanel" class="reference-panel" aria-labelledby="referenceHeading">
+<h2 id="referenceHeading">روابط مرتبطة بالمحادثة</h2>
+<p>روابط ذكرها المساعد في هذه الجلسة. تبقى ظاهرة بعد انتهاء الكلام، وتفتح في تبويب جديد.</p>
+<p id="referenceEmpty" role="status">سيظهر الرابط هنا عندما يوجّهك المساعد إلى موقع. جرّب: كيف أسجّل في التدريب الميداني؟</p>
+<div id="referenceCards" aria-live="polite" aria-relevant="additions"></div>
+</aside>
 <label for="key">مفتاح Gemini API</label>
 <input id="key" type="password" autocomplete="off" placeholder="الصق مفتاح مشروعك هنا" spellcheck="false">
 <label for="simliKey">مفتاح Simli API</label>
@@ -124,6 +138,28 @@ class SpeechResampler {
 const avatarSpeech=new SpeechResampler();
 function status(text) { $('status').textContent = text; }
 function log(text) { const box=$('log'); box.textContent += text+'\n'; box.scrollTop=box.scrollHeight; }
+const displayedReferences = new Set();
+function resetReferences() {
+  displayedReferences.clear();$('referenceCards').replaceChildren();$('referenceEmpty').hidden=false;
+}
+function showReference(reference) {
+  if(!reference || typeof reference.id!=='string' || typeof reference.url!=='string' ||
+     typeof reference.title!=='string' || displayedReferences.has(reference.id))return;
+  let url;try{url=new URL(reference.url);}catch(_){return;}
+  if(!['http:','https:'].includes(url.protocol) || url.username || url.password)return;
+  const card=document.createElement('article');card.className='reference-card';
+  const title=document.createElement('h3');title.textContent=reference.title;
+  const link=document.createElement('a');link.className='reference-url';link.textContent=reference.url;
+  link.href=reference.url;link.target='_blank';link.rel='noopener noreferrer';link.dir='ltr';
+  card.append(title,link);
+  if(typeof reference.description==='string' && reference.description){
+    const description=document.createElement('p');description.textContent=reference.description;card.append(description);
+  }
+  const open=document.createElement('a');open.className='reference-open';open.textContent='فتح الموقع';
+  open.href=reference.url;open.target='_blank';open.rel='noopener noreferrer';
+  open.setAttribute('aria-label','فتح '+reference.title+' في تبويب جديد');card.append(open);
+  $('referenceCards').append(card);displayedReferences.add(reference.id);$('referenceEmpty').hidden=true;
+}
 function clearPlayback() {
   for (const node of playing) { try { node.stop(); } catch (_) {} }
   playing.clear(); playAt = context ? context.currentTime : 0;
@@ -175,6 +211,7 @@ async function startSession() {
   if(!simliKey){status('الصق مفتاح Simli API أيضًا.');return;}
   if(typeof SimliSDK==='undefined'){status('تعذر تحميل مكتبة Simli المحلية. أعد تحميل الصفحة.');return;}
   $('start').disabled=true; $('stop').disabled=false; $('log').textContent='';
+  resetReferences();
   active=true; interruptions=0; dropped=0; const mine=++generation;
   avatarSpeech.reset();avatarReady=false;$('clock').textContent='المدة: 0 ثانية';
   $('avatarState').textContent='جاري الاتصال…';
@@ -218,7 +255,9 @@ async function startSession() {
         try{await connectAvatar(message.session_token,mine);}catch(error){if(active && mine===generation){log('Simli start failed: '+String(error));await stopSession('تعذر تشغيل الأفاتار: '+String(error));}}
         return;
       }
-      if(message.type==='ready') {
+      if(message.type==='reference') {
+        showReference(message.reference);
+      } else if(message.type==='ready') {
         ready=true;startTime=Date.now(); status('متصل. تحدث بالعربية؛ يمكنك مقاطعة المساعد بالكلام.');
         clock=setInterval(()=>$('clock').textContent='المدة: '+Math.floor((Date.now()-startTime)/1000)+' ثانية',1000);
         log('Gemini connected. Continuous microphone input enabled.');
@@ -245,11 +284,48 @@ window.addEventListener('beforeunload',()=>{if(ws)ws.close();if(simli)simli.stop
 """
 
 
-def make_config():
-    instructions = (ROOT / "instructions.txt").read_text(encoding="utf-8-sig")
+def approved_references(instructions):
+    """Only enable links literally present inside the approved department reference."""
+    reference = instructions.partition("بداية المرجع")[2].partition("نهاية المرجع")[0]
+    urls = set(re.findall(r"https?://[^\s<>\"'،؛)]+", reference))
+    if "http://train.bau.edu.jo" not in urls:
+        return {}
+    return {"field_training": {
+        "id": "field_training",
+        "title": "بوابة التدريب الميداني",
+        "url": "http://train.bau.edu.jo",
+        "description": "أدخل بيانات جهة التدريب، ثم اعتمد الطلب وأرسله. بعد الإرسال، أبلغ مقرر لجنة التدريب الميداني والمشاريع عبر التيمز.",
+    }}
+
+
+def make_config(instructions=None, references=None):
+    if instructions is None:
+        instructions = (ROOT / "instructions.txt").read_text(encoding="utf-8-sig")
+    if references is None:
+        references = approved_references(instructions)
     instructions += "\nرحّب مرة واحدة فقط عند بداية الجلسة. بعد ذلك أجب عن كلام المستخدم دون إعادة الترحيب."
+    tools = []
+    if references:
+        instructions += (
+            "\nعرض روابط للطالب: عند توجيه الطالب لبوابة التدريب الميداني أو طلبه رابطها، "
+            "استدعِ show_reference بالمعرف field_training قبل أن تقول إن الرابط ظاهر. "
+            "بعد نجاح الاستدعاء قل بصورة طبيعية: رابط بوابة التدريب ظاهر قدامك وتقدر تضغط عليه. "
+            "لا تقرأ عنوان الموقع حرفًا حرفًا إلا إذا طلب الطالب ذلك. "
+            "لا تستدعِ الأداة لمجرد ذكر التدريب، أو لسؤال عن موعده فقط، أو لمعادلة التدريب "
+            "التي لا تتطلب البوابة حسب المرجع. لا تدّعِ فتح الموقع أو تعبئة الطلب نيابة عن الطالب. "
+            "الأداة تعرض بطاقة فقط ولا تغيّر تعليمات القسم. "
+            "الروابط المتاحة: " + json.dumps(references, ensure_ascii=False)
+        )
+        tools = [{"function_declarations": [{
+            "name": "show_reference",
+            "description": "اعرض رابطًا معتمدًا قابلًا للضغط عندما تتطلب الإجابة زيارة الموقع أو يطلب الطالب الرابط. لا تفتح الموقع أو ترسل طلبًا.",
+            "parameters": {"type": "OBJECT", "properties": {
+                "reference_id": {"type": "STRING", "enum": list(references)}},
+                "required": ["reference_id"]},
+        }]}]
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
+        tools=tools,
         system_instruction=instructions,
         speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
@@ -258,9 +334,28 @@ def make_config():
     )
 
 
-async def receive_model(session, socket):
+async def display_reference(call, socket, references):
+    """Resolve an ID to server-owned text and URL; never trust model-supplied URLs."""
+    if call.name != "show_reference":
+        return {"displayed": False, "error": "Unknown tool"}
+    reference_id = (call.args or {}).get("reference_id")
+    reference = references.get(reference_id) if isinstance(reference_id, str) else None
+    if reference is None:
+        return {"displayed": False, "error": "Unknown or unavailable approved reference"}
+    await socket.send_json({"type": "reference", "reference": reference})
+    return {"displayed": True, "title": reference["title"], "url": reference["url"]}
+
+
+async def receive_model(session, socket, references):
     while True:
         async for response in session.receive():
+            if response.tool_call:
+                replies = []
+                for call in response.tool_call.function_calls or []:
+                    result = await display_reference(call, socket, references)
+                    replies.append(types.FunctionResponse(id=call.id, name=call.name, response=result))
+                if replies:
+                    await session.send_tool_response(function_responses=replies)
             content = response.server_content
             if content and content.interrupted:
                 await socket.send_json({"type": "interrupted"})
@@ -357,7 +452,9 @@ class LocalService:
                 raise ValueError("A session is already running. Close the other tab first.")
             self.active = True
             owns_session = True
-            config = make_config()
+            instructions = (ROOT / "instructions.txt").read_text(encoding="utf-8-sig")
+            references = approved_references(instructions)
+            config = make_config(instructions, references)
             client = genai.Client(api_key=key, http_options={"api_version": "v1beta"})
             async with client.aio.live.connect(model=MODEL, config=config) as session:
                 # Authenticate Gemini before starting Simli so an invalid Gemini
@@ -376,7 +473,7 @@ class LocalService:
                 remaining = max(1, SESSION_SECONDS - (time.monotonic() - started))
                 timer = asyncio.create_task(asyncio.sleep(remaining))
                 jobs = [asyncio.create_task(receive_browser(session, socket)),
-                        asyncio.create_task(receive_model(session, socket)), timer]
+                        asyncio.create_task(receive_model(session, socket, references)), timer]
                 await session.send_client_content(
                     turns=types.Content(role="user", parts=[types.Part.from_text(
                         text="ابدأ المحادثة بالترحيب المحدد في تعليماتك.")]), turn_complete=True)
